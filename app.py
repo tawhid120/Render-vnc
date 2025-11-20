@@ -23,23 +23,27 @@ def setup_vnc_and_ngrok():
     
     passwd_path = os.path.join(vnc_dir, "passwd")
     
-    # পাসওয়ার্ড ফাইলে রাইট করা
-    proc = subprocess.Popen(['vncpasswd', '-f'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    proc.communicate(input=VNC_PASSWORD.encode())
-    
-    with open(passwd_path, 'wb') as f:
-        f.write(proc.stdout.read() if proc.stdout else b'') # এটি নিশ্চিত করার জন্য আবার লেখা হতে পারে, তবে vncpasswd -f আউটপুট দেয়
-    
-    # নিশ্চিত করি পাসওয়ার্ড ফাইলটি ঠিকমতো তৈরি হয়েছে
-    cmd = f"echo '{VNC_PASSWORD}' | vncpasswd -f > {passwd_path}"
-    os.system(cmd)
-    os.chmod(passwd_path, 0o600)
+    # পাসওয়ার্ড সেট করার কমান্ড (ফুল পাথ ব্যবহার করা হয়েছে সেফটির জন্য)
+    # যদি vncpasswd না পায়, তবে tigervncpasswd ট্রাই করবে
+    vnc_cmd = "vncpasswd"
+    if not os.path.exists("/usr/bin/vncpasswd") and os.path.exists("/usr/bin/tigervncpasswd"):
+        vnc_cmd = "tigervncpasswd"
 
-    # ২. VNC সার্ভার চালু করা
-    if os.path.exists("/tmp/.X1-lock"):
-        os.remove("/tmp/.X1-lock")
-    if os.path.exists("/tmp/.X11-unix/X1"):
-        os.remove("/tmp/.X11-unix/X1")
+    print(f"Using password command: {vnc_cmd}")
+
+    try:
+        proc = subprocess.Popen([vnc_cmd, '-f'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        proc.communicate(input=VNC_PASSWORD.encode())
+        
+        with open(passwd_path, 'wb') as f:
+            f.write(proc.stdout.read() if proc.stdout else b'')
+        
+        os.chmod(passwd_path, 0o600)
+    except Exception as e:
+        print(f"Error setting password: {e}")
+
+    # ২. VNC সার্ভার চালু করা (আগের লক ফাইল ক্লিন করা)
+    os.system("rm -rf /tmp/.X1-lock /tmp/.X11-unix/X1")
 
     print("Launching VNC Server...")
     subprocess.Popen(
@@ -54,33 +58,32 @@ def setup_vnc_and_ngrok():
         subprocess.run(['ngrok', 'config', 'add-authtoken', ngrok_token])
         
         print("Starting Ngrok Tunnel...")
-        # Ngrok লগ ফাইলে আউটপুট দিবে যাতে আমরা URL খুঁজে পাই
         with open(LOG_FILE, "w") as log:
             subprocess.Popen(['ngrok', 'tcp', '5901', '--log=stdout'], stdout=log, stderr=log)
     else:
-        with open(INFO_FILE, "w") as f:
-            f.write("Error: NGROK_AUTHTOKEN Environment Variable is missing in Render!")
+        print("NGROK_AUTHTOKEN missing!")
 
 def get_connection_info():
-    """Ngrok লগ ফাইল থেকে URL খুঁজে বের করে রিটার্ন করবে"""
     if not os.path.exists(LOG_FILE):
         return "Initializing tunnel..."
     
     url = None
-    with open(LOG_FILE, 'r') as f:
-        content = f.read()
-        # Regex দিয়ে tcp:// ঠিকানা খোঁজা
-        match = re.search(r"tcp://[0-9a-z.-]+:[0-9]+", content)
-        if match:
-            url = match.group(0)
+    try:
+        with open(LOG_FILE, 'r') as f:
+            content = f.read()
+            match = re.search(r"tcp://[0-9a-z.-]+:[0-9]+", content)
+            if match:
+                url = match.group(0)
+    except:
+        pass
     
     if url:
         clean_url = url.replace("tcp://", "")
         return f"<strong>Address:</strong> {clean_url}<br><strong>Password:</strong> {VNC_PASSWORD}"
     else:
-        return "Waiting for Ngrok tunnel to generate URL... (Refresh in 5s)"
+        return "Waiting for Ngrok tunnel... (Refresh in 5s)"
 
-# Flask সার্ভার চালু হওয়ার আগেই ব্যাকগ্রাউন্ড প্রসেস রান করা
+# সেটআপ রান করা
 setup_vnc_and_ngrok()
 
 @app.route('/')
@@ -89,13 +92,13 @@ def home():
     html = f"""
     <html>
     <head>
-        <title>My Cloud Computer</title>
-        <meta http-equiv="refresh" content="10"> <style>
+        <title>Cloud PC</title>
+        <meta http-equiv="refresh" content="10">
+        <style>
             body {{ font-family: sans-serif; background: #1a1a1a; color: white; text-align: center; padding-top: 50px; }}
             .card {{ background: #333; padding: 30px; display: inline-block; border-radius: 10px; border: 2px solid #4CAF50; }}
             h1 {{ color: #4CAF50; }}
-            .info {{ font-size: 24px; margin: 20px 0; line-height: 1.6; }}
-            .note {{ color: #aaa; font-size: 14px; }}
+            .info {{ font-size: 24px; margin: 20px 0; color: #fff; }}
         </style>
     </head>
     <body>
@@ -103,9 +106,7 @@ def home():
             <h1>Render VNC Monitor</h1>
             <div class="info">{info}</div>
             <hr>
-            <p>Open <b>RealVNC Viewer</b> on your phone.</p>
-            <p>Enter the Address above and use the Password: <b>{VNC_PASSWORD}</b></p>
-            <p class="note">Page auto-refreshes every 10 seconds.</p>
+            <p>Use <b>RealVNC Viewer</b> with these details.</p>
         </div>
     </body>
     </html>
